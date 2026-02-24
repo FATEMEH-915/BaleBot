@@ -6,6 +6,8 @@ const path = require('path');
 const TOKEN = '1960491677:N1YOKDBmMPox-rlbb6AAgDTEYgCFlLI35Tg';
 const API_URL = 'https://tapi.bale.ai/bot';
 const BOT_USERNAME = 'MyTestBot';
+// ================ تنظیمات ادمین ================
+const ADMIN_ID = '829971148'; 
 // ==============================================
 
 console.log('🚀 ربات ارسال فایل‌های درسی - راه‌اندازی...\n');
@@ -16,12 +18,69 @@ const PDF_FILES = {
     'نوشتن رزومه': './pdf_files/موارد مهم در نوشتن رزومه.pdf'
 };
 
+// ================ مسیر فایل‌های آپلود شده ================
+const UPLOADED_FILES_FILE = './uploaded_files.json';
+const PDF_FILES_DIR = './pdf_files';
+
 // ================ توابع کمکی ================
 
 function log(message, type = 'INFO') {
     const timestamp = new Date().toLocaleString('fa-IR');
     const logMessage = `[${timestamp}] [${type}] ${message}`;
     console.log(logMessage);
+}
+
+// تابع بررسی ادمین بودن
+function isAdmin(userId) {
+    return userId.toString() === ADMIN_ID.toString();
+}
+
+// ایجاد پوشه pdf_files اگر وجود ندارد
+function ensurePdfFilesDir() {
+    if (!fs.existsSync(PDF_FILES_DIR)) {
+        fs.mkdirSync(PDF_FILES_DIR, { recursive: true });
+        log(`پوشه ${PDF_FILES_DIR} ایجاد شد`, 'SYSTEM');
+    }
+}
+
+// خواندن فایل‌های آپلود شده
+function readUploadedFiles() {
+    try {
+        if (fs.existsSync(UPLOADED_FILES_FILE)) {
+            const data = fs.readFileSync(UPLOADED_FILES_FILE, 'utf8');
+            return JSON.parse(data);
+        }
+    } catch (error) {
+        log(`خطا در خواندن فایل آپلود شده: ${error.message}`, 'ERROR');
+    }
+    return {};
+}
+
+// ذخیره فایل آپلود شده
+function saveUploadedFile(courseName, fileName) {
+    try {
+        let uploadedFiles = readUploadedFiles();
+        uploadedFiles[courseName] = fileName;
+        fs.writeFileSync(UPLOADED_FILES_FILE, JSON.stringify(uploadedFiles, null, 2), 'utf8');
+        log(`فایل آپلود شده ذخیره شد: ${courseName} => ${fileName}`, 'UPLOAD');
+        return true;
+    } catch (error) {
+        log(`خطا در ذخیره فایل آپلود شده: ${error.message}`, 'ERROR');
+        return false;
+    }
+}
+
+// دریافت لیست همه فایل‌ها (اصلی + آپلود شده)
+function getAllFiles() {
+    const uploadedFiles = readUploadedFiles();
+    const allFiles = { ...PDF_FILES };
+    
+    // اضافه کردن فایل‌های آپلود شده به مسیر pdf_files
+    Object.keys(uploadedFiles).forEach(courseName => {
+        allFiles[courseName] = path.join(PDF_FILES_DIR, uploadedFiles[courseName]);
+    });
+    
+    return allFiles;
 }
 
 async function sendMessage(chatId, text, options = {}) {
@@ -36,8 +95,6 @@ async function sendMessage(chatId, text, options = {}) {
             messageData.reply_markup = options.replyMarkup;
         }
         
-        console.log('📤 ارسال پیام با داده:', JSON.stringify(messageData, null, 2));
-        
         const response = await axios.post(`${API_URL}${TOKEN}/sendMessage`, messageData, {
             timeout: 10000,
             headers: {
@@ -47,7 +104,6 @@ async function sendMessage(chatId, text, options = {}) {
         
         if (response.data.ok) {
             log(`پیام ارسال شد به ${chatId}`, 'SEND');
-            console.log('✅ پاسخ API:', JSON.stringify(response.data.result, null, 2));
             return response.data;
         } else {
             log(`خطای API: ${JSON.stringify(response.data)}`, 'ERROR');
@@ -55,7 +111,6 @@ async function sendMessage(chatId, text, options = {}) {
         
     } catch (error) {
         log(`خطا در ارسال پیام: ${error.message}`, 'ERROR');
-        console.log('❌ جزئیات خطا:', error.response?.data || error.message);
     }
     return null;
 }
@@ -66,9 +121,8 @@ async function sendPDFFile(chatId, pdfPath, caption = "") {
             log(`فایل ${pdfPath} پیدا نشد`, 'ERROR');
             await sendMessage(chatId, 
                 `❌ فایل مورد نظر یافت نشد.\n\n` +
-                `📁 نام فایل: ${path.basename(pdfPath)}\n` +
-                `📍 مسیر: ${pdfPath}\n\n` +
-                `لطفاً فایل را در پوشه pdf_files قرار دهید.`
+                `📁 نام فایل: ${path.basename(pdfPath)}\n\n` +
+                `لطفاً با پشتیبانی تماس بگیرید.`
             );
             return null;
         }
@@ -108,15 +162,57 @@ async function sendPDFFile(chatId, pdfPath, caption = "") {
         
     } catch (error) {
         log(`خطا در ارسال PDF: ${error.message}`, 'ERROR');
-        console.log('❌ جزئیات خطای فایل:', error.response?.data || error.message);
         
         await sendMessage(chatId, 
-            `📁 نام فایل: ${path.basename(pdfPath)}\n\n` +
             `❌ متأسفانه در ارسال فایل مشکلی پیش آمده.\n\n` +
             `⚠️ ممکن است حجم فایل زیاد باشد یا فرمت آن پشتیبانی نشود.`
         );
     }
     return null;
+}
+
+// دریافت اطلاعات فایل از تلگرام
+async function getFile(fileId) {
+    try {
+        const response = await axios.post(`${API_URL}${TOKEN}/getFile`, {
+            file_id: fileId
+        }, {
+            timeout: 10000
+        });
+        
+        if (response.data.ok) {
+            return response.data.result;
+        }
+    } catch (error) {
+        log(`خطا در دریافت اطلاعات فایل: ${error.message}`, 'ERROR');
+    }
+    return null;
+}
+
+// دانلود فایل از تلگرام
+async function downloadFile(filePath, destination) {
+    try {
+        const response = await axios({
+            url: `https://tapi.bale.ai/file/bot${TOKEN}/${filePath}`,
+            method: 'GET',
+            responseType: 'stream',
+            timeout: 30000
+        });
+        
+        const writer = fs.createWriteStream(destination);
+        response.data.pipe(writer);
+        
+        return new Promise((resolve, reject) => {
+            writer.on('finish', () => {
+                log(`فایل دانلود شد: ${destination}`, 'DOWNLOAD');
+                resolve(true);
+            });
+            writer.on('error', reject);
+        });
+    } catch (error) {
+        log(`خطا در دانلود فایل: ${error.message}`, 'ERROR');
+        return false;
+    }
 }
 
 async function getUpdates() {
@@ -142,75 +238,230 @@ const userStates = {};
 const UserState = {
     START: 'start',
     MAIN_MENU: 'main_menu',
-    SELECT_COURSE: 'select_course'
+    SELECT_COURSE: 'select_course',
+    UPLOAD_COURSE_NAME: 'upload_course_name',
+    UPLOAD_COURSE_FILE: 'upload_course_file'
 };
 
 // ================ فقط دکمه‌های شیشه‌ای (Inline Keyboard) ================
 
-// منوی اصلی با دکمه‌های شیشه‌ای
-const mainMenuInlineKeyboard = {
-    inline_keyboard: [
+// منوی اصلی با دکمه‌های شیشه‌ای - نمایش بر اساس ادمین بودن
+function getMainMenuInlineKeyboard(userId) {
+    const keyboard = [
         [
             {
                 text: '📚 دریافت سوالات درسی',
                 callback_data: 'get_courses'
             }
-        ],
-        [
-            {
-                text: 'ℹ️ درباره ربات',
-                callback_data: 'about_bot'
-            },
-            {
-                text: '🆘 راهنما',
-                callback_data: 'help_guide'
-            }
         ]
-    ]
-};
+    ];
+    
+    // فقط اگر کاربر ادمین است، دکمه آپلود رو نشون بده
+    if (isAdmin(userId)) {
+        keyboard.push([
+            {
+                text: '📤 آپلود سوالات',
+                callback_data: 'upload_course'
+            }
+        ]);
+    }
+    
+    // دکمه‌های عمومی که برای همه نمایش داده میشه
+    keyboard.push([
+        {
+            text: 'ℹ️ درباره ربات',
+            callback_data: 'about_bot'
+        },
+        {
+            text: '🆘 راهنما',
+            callback_data: 'help_guide'
+        }
+    ]);
+    
+    return {
+        inline_keyboard: keyboard
+    };
+}
 
 // منوی انتخاب درس با دکمه‌های شیشه‌ای
-const courseMenuInlineKeyboard = {
-    inline_keyboard: [
-        [
-            {
-                text: '📐 ریاضی 1',
-                callback_data: 'course_math'
-            },
-            {
-                text: '⚛️ فیزیک 1',
-                callback_data: 'course_physics'
+function getCourseMenuInlineKeyboard() {
+    const allFiles = getAllFiles();
+    const keyboard = [];
+    
+    // فایل‌های اصلی
+    keyboard.push([
+        {
+            text: '📖 تفسیر قرآن',
+            callback_data: 'course_tafsir'
+        },
+        {
+            text: '📝 نوشتن رزومه',
+            callback_data: 'course_resume'
+        }
+    ]);
+    
+    // فایل‌های آپلود شده
+    const uploadedFiles = readUploadedFiles();
+    const uploadedCourseNames = Object.keys(uploadedFiles);
+    
+    if (uploadedCourseNames.length > 0) {
+        // هر دو تا فایل در یک ردیف
+        for (let i = 0; i < uploadedCourseNames.length; i += 2) {
+            const row = [];
+            
+            // فایل اول
+            const courseName1 = uploadedCourseNames[i];
+            row.push({
+                text: `📄 ${courseName1.substring(0, 15)}${courseName1.length > 15 ? '...' : ''}`,
+                callback_data: `uploaded_${courseName1}`
+            });
+            
+            // فایل دوم (اگر وجود دارد)
+            if (i + 1 < uploadedCourseNames.length) {
+                const courseName2 = uploadedCourseNames[i + 1];
+                row.push({
+                    text: `📄 ${courseName2.substring(0, 15)}${courseName2.length > 15 ? '...' : ''}`,
+                    callback_data: `uploaded_${courseName2}`
+                });
             }
-        ],
-        [
-            {
-                text: '📖 تفسیر قرآن',
-                callback_data: 'course_tafsir'
-            },
-            {
-                text: '📝 نوشتن رزومه',
-                callback_data: 'course_resume'
-            }
-        ],
-        [
-            {
-                text: '🔙 بازگشت به منوی اصلی',
-                callback_data: 'back_to_main'
-            }
-        ]
-    ]
-};
+            
+            keyboard.push(row);
+        }
+    }
+    
+    // دکمه بازگشت
+    keyboard.push([
+        {
+            text: '🔙 بازگشت به منوی اصلی',
+            callback_data: 'back_to_main'
+        }
+    ]);
+    
+    return {
+        inline_keyboard: keyboard
+    };
+}
 
 // ================ توابع پردازش پیام و Callback ================
 
 async function processMessage(message) {
     const chatId = message.chat.id;
     const user = message.from;
+    const userId = user.id;
     const text = message.text || '';
+    const document = message.document;
     
-    log(`📩 پیام از ${user.first_name} (${user.id}): "${text}"`, 'RECEIVE');
+    log(`📩 پیام از ${user.first_name} (${userId}): "${text}"`, 'RECEIVE');
     
     const currentState = userStates[chatId] || UserState.START;
+    
+    // ========== پردازش حالت آپلود (فقط برای ادمین) ==========
+    if (currentState === UserState.UPLOAD_COURSE_NAME) {
+        // بررسی ادمین بودن
+        if (!isAdmin(userId)) {
+            userStates[chatId] = UserState.MAIN_MENU;
+            await sendMessage(chatId,
+                '⛔ شما اجازه آپلود فایل ندارید!',
+                { replyMarkup: getMainMenuInlineKeyboard(userId) }
+            );
+            return;
+        }
+        
+        // کاربر نام درس را وارد کرده
+        if (text && text.trim().length > 0) {
+            const courseName = text.trim();
+            userStates[chatId] = {
+                state: UserState.UPLOAD_COURSE_FILE,
+                courseName: courseName
+            };
+            
+            await sendMessage(chatId,
+                `✅ نام درس "${courseName}" ثبت شد.\n\n` +
+                `📤 حالا لطفاً فایل PDF سوالات را ارسال کنید:\n\n` +
+                `⚠️ فقط فایل PDF قابل قبول است`
+            );
+        }
+        return;
+    }
+    
+    if (currentState.state === UserState.UPLOAD_COURSE_FILE) {
+        // بررسی ادمین بودن
+        if (!isAdmin(userId)) {
+            userStates[chatId] = UserState.MAIN_MENU;
+            await sendMessage(chatId,
+                '⛔ شما اجازه آپلود فایل ندارید!',
+                { replyMarkup: getMainMenuInlineKeyboard(userId) }
+            );
+            return;
+        }
+        
+        // کاربر فایل را ارسال کرده
+        if (document && document.mime_type === 'application/pdf') {
+            try {
+                await sendMessage(chatId, '⏳ در حال دریافت فایل... لطفاً صبر کنید...');
+                
+                // دریافت اطلاعات فایل
+                const fileInfo = await getFile(document.file_id);
+                if (!fileInfo) {
+                    throw new Error('دریافت اطلاعات فایل ناموفق بود');
+                }
+                
+                // ایجاد پوشه pdf_files اگر وجود ندارد
+                ensurePdfFilesDir();
+                
+                // نام فایل (با حروف انگلیسی و ایمن)
+                const timestamp = Date.now();
+                const safeFileName = `${currentState.courseName.replace(/[^\w\u0600-\u06FF]/g, '_')}_${timestamp}.pdf`;
+                const destination = path.join(PDF_FILES_DIR, safeFileName);
+                
+                // دانلود فایل
+                const downloaded = await downloadFile(fileInfo.file_path, destination);
+                if (!downloaded) {
+                    throw new Error('دانلود فایل ناموفق بود');
+                }
+                
+                // ذخیره اطلاعات فایل
+                const saved = saveUploadedFile(currentState.courseName, safeFileName);
+                
+                if (saved) {
+                    await sendMessage(chatId,
+                        `🎉 *آپلود فایل سوالات با موفقیت انجام شد!*\n\n` +
+                        `📚 درس: ${currentState.courseName}\n` +
+                        `📁 نام فایل: ${safeFileName}\n` +
+                        `✅ فایل با موفقیت آپلود شد و اکنون در بخش "دریافت سوالات درسی" قابل دسترسی است.\n\n` +
+                        `برای مشاهده فایل، از منوی اصلی "دریافت سوالات درسی" را انتخاب کنید.`,
+                        { replyMarkup: getMainMenuInlineKeyboard(userId) }
+                    );
+                    
+                    log(`آپلود موفق: ${currentState.courseName} توسط ${user.first_name}`, 'UPLOAD_SUCCESS');
+                }
+                
+                // بازگشت به حالت اصلی
+                userStates[chatId] = UserState.MAIN_MENU;
+                
+            } catch (error) {
+                log(`خطا در آپلود فایل: ${error.message}`, 'ERROR');
+                await sendMessage(chatId,
+                    `❌ خطا در آپلود فایل:\n${error.message}\n\n` +
+                    `لطفاً دوباره تلاش کنید.`,
+                    { replyMarkup: getMainMenuInlineKeyboard(userId) }
+                );
+                userStates[chatId] = UserState.MAIN_MENU;
+            }
+        } else if (document) {
+            // فایل غیر PDF
+            await sendMessage(chatId,
+                '❌ فقط فایل‌های PDF قابل قبول هستند.\n\n' +
+                'لطفاً یک فایل PDF ارسال کنید.',
+                { replyMarkup: getMainMenuInlineKeyboard(userId) }
+            );
+        } else {
+            await sendMessage(chatId,
+                'لطفاً یک فایل PDF ارسال کنید.'
+            );
+        }
+        return;
+    }
     
     // ========== دستور /start ==========
     if (text === '/start' || text === `/start@${BOT_USERNAME}`) {
@@ -225,7 +476,7 @@ async function processMessage(message) {
         `;
         
         userStates[chatId] = UserState.MAIN_MENU;
-        await sendMessage(chatId, welcomeMessage, { replyMarkup: mainMenuInlineKeyboard });
+        await sendMessage(chatId, welcomeMessage, { replyMarkup: getMainMenuInlineKeyboard(userId) });
         return;
     }
     
@@ -237,18 +488,35 @@ async function processMessage(message) {
             `*/help* - این راهنما\n` +
             `*/files* - لیست فایل‌ها\n\n` +
             `📞 برای پشتیبانی پیام دهید.`,
-            { replyMarkup: mainMenuInlineKeyboard }
+            { replyMarkup: getMainMenuInlineKeyboard(userId) }
         );
         return;
     }
     
     if (text === '/files') {
+        const allFiles = getAllFiles();
         let filesList = `*📂 لیست فایل‌ها*\n\n`;
-        for (const [name, path] of Object.entries(PDF_FILES)) {
-            const exists = fs.existsSync(path) ? '✅' : '❌';
+        
+        // فایل‌های اصلی
+        filesList += `*فایل‌های اصلی:*\n`;
+        for (const [name, filePath] of Object.entries(PDF_FILES)) {
+            const exists = fs.existsSync(filePath) ? '✅' : '❌';
             filesList += `${exists} ${name}\n`;
         }
-        await sendMessage(chatId, filesList, { replyMarkup: mainMenuInlineKeyboard });
+        
+        // فایل‌های آپلود شده
+        const uploadedFiles = readUploadedFiles();
+        const uploadedCourseNames = Object.keys(uploadedFiles);
+        if (uploadedCourseNames.length > 0) {
+            filesList += `\n*فایل‌های آپلود شده:*\n`;
+            uploadedCourseNames.forEach(name => {
+                const filePath = path.join(PDF_FILES_DIR, uploadedFiles[name]);
+                const exists = fs.existsSync(filePath) ? '✅' : '❌';
+                filesList += `${exists} ${name}\n`;
+            });
+        }
+        
+        await sendMessage(chatId, filesList, { replyMarkup: getMainMenuInlineKeyboard(userId) });
         return;
     }
     
@@ -256,13 +524,14 @@ async function processMessage(message) {
     userStates[chatId] = UserState.MAIN_MENU;
     await sendMessage(chatId, 
         "👋 سلام! برای شروع روی /start کلیک کنید.",
-        { replyMarkup: mainMenuInlineKeyboard }
+        { replyMarkup: getMainMenuInlineKeyboard(userId) }
     );
 }
 
 async function processCallbackQuery(callbackQuery) {
     const chatId = callbackQuery.message.chat.id;
     const user = callbackQuery.from;
+    const userId = user.id;
     const data = callbackQuery.data;
     
     log(`🔘 Callback از ${user.first_name}: ${data}`, 'CALLBACK');
@@ -281,24 +550,37 @@ async function processCallbackQuery(callbackQuery) {
 
 لطفاً درس مورد نظر خود را انتخاب کنید:
 
-📐 *ریاضی 1*
-⚛️ *فیزیک 1* 
-📖 *تفسیر قرآن*
-📝 *نوشتن رزومه* 
-
-👇*یکی را انتخاب کنید:*
+👇 *یکی را انتخاب کنید:*
                 `;
                 userStates[chatId] = UserState.SELECT_COURSE;
-                await sendMessage(chatId, selectMessage, { replyMarkup: courseMenuInlineKeyboard });
+                await sendMessage(chatId, selectMessage, { replyMarkup: getCourseMenuInlineKeyboard() });
+                break;
+                
+            case 'upload_course':
+                // بررسی ادمین بودن قبل از اجازه آپلود
+                if (isAdmin(userId)) {
+                    userStates[chatId] = UserState.UPLOAD_COURSE_NAME;
+                    await sendMessage(chatId,
+                        `📤 *آپلود سوالات درسی*\n\n` +
+                        `لطفاً نام درس را وارد کنید:\n\n`
+                    );
+                } else {
+                    // اگر ادمین نیست، پیام خطا بده
+                    await sendMessage(chatId,
+                        `⛔ *دسترسی محدود*\n\n` +
+                        `متأسفانه فقط مدیر ربات (ادمین) می‌تواند فایل آپلود کند.\n\n` +
+                        `شما می‌توانید از بخش "دریافت سوالات درسی" فایل‌های موجود را دریافت کنید.`,
+                        { replyMarkup: getMainMenuInlineKeyboard(userId) }
+                    );
+                }
                 break;
                 
             case 'about_bot':
                 await sendMessage(chatId, 
                     `*🤖 درباره ربات*\n\n` +
                     `این ربات برای دسترسی آسان به سوالات و فایل‌های درسی طراحی شده.\n\n` +
-                    `*توسعه‌دهنده:*\n` +
                     `*پلتفرم:* پیام‌رسان بله`,
-                    { replyMarkup: mainMenuInlineKeyboard }
+                    { replyMarkup: getMainMenuInlineKeyboard(userId) }
                 );
                 break;
                 
@@ -310,7 +592,7 @@ async function processCallbackQuery(callbackQuery) {
                     `3. درس مورد نظر را انتخاب کنید\n` +
                     `4. فایل PDF برای شما ارسال می‌شود\n\n` +
                     `📞 پشتیبانی: @Username`,
-                    { replyMarkup: mainMenuInlineKeyboard }
+                    { replyMarkup: getMainMenuInlineKeyboard(userId) }
                 );
                 break;
                 
@@ -321,11 +603,10 @@ async function processCallbackQuery(callbackQuery) {
                     `درخواست شده توسط: ${user.first_name}\n` +
                     `🕐 ${new Date().toLocaleString('fa-IR')}`
                 );
-                userStates[chatId] = UserState.MAIN_MENU;
                 await sendMessage(chatId, 
                     "✅ فایل تفسیر قرآن ارسال شد.\n\n" +
                     "👇 برای فایل‌های دیگر از منوی زیر انتخاب کنید:",
-                    { replyMarkup: mainMenuInlineKeyboard }
+                    { replyMarkup: getCourseMenuInlineKeyboard() }
                 );
                 break;
                 
@@ -336,55 +617,78 @@ async function processCallbackQuery(callbackQuery) {
                     `درخواست شده توسط: ${user.first_name}\n` +
                     `🕐 ${new Date().toLocaleString('fa-IR')}`
                 );
-                userStates[chatId] = UserState.MAIN_MENU;
                 await sendMessage(chatId, 
                     "✅ فایل آموزش رزومه نویسی ارسال شد.\n\n" +
                     "👇 برای فایل‌های دیگر از منوی زیر انتخاب کنید:",
-                    { replyMarkup: mainMenuInlineKeyboard }
+                    { replyMarkup: getCourseMenuInlineKeyboard() }
                 );
                 break;
                 
-            case 'course_math':
-                await sendMessage(chatId, 
-                    "*📐 ریاضی 1*\n\n" +
-                    "⏳ به زودی فایل ریاضی 1 اضافه خواهد شد.\n\n" +
-                    "*📌 در حال حاضر فایل‌های زیر موجود است:*\n" +
-                    "• تفسیر قرآن 📖\n" +
-                    "• آموزش رزومه نویسی 📝",
-                    { replyMarkup: mainMenuInlineKeyboard }
-                );
-                break;
-                
-            case 'course_physics':
-                await sendMessage(chatId, 
-                    "*⚛️ فیزیک 1*\n\n" +
-                    "⏳ به زودی فایل فیزیک 1 اضافه خواهد شد.\n\n" +
-                    "*📌 در حال حاضر فایل‌های زیر موجود است:*\n" +
-                    "• تفسیر قرآن 📖\n" +
-                    "• آموزش رزومه نویسی 📝",
-                    { replyMarkup: mainMenuInlineKeyboard }
-                );
-                break;
-                
-            case 'back_to_main':
-                userStates[chatId] = UserState.MAIN_MENU;
-                await sendMessage(chatId, 
-                    "🔙 به منوی اصلی بازگشتید.\n\n" +
-                    "👇 لطفاً انتخاب کنید:",
-                    { replyMarkup: mainMenuInlineKeyboard }
-                );
-                break;
-                
+            // پردازش فایل‌های آپلود شده
             default:
-                userStates[chatId] = UserState.MAIN_MENU;
-                await sendMessage(chatId, 
-                    "👋 سلام! برای شروع روی /start کلیک کنید.",
-                    { replyMarkup: mainMenuInlineKeyboard }
-                );
+                if (data.startsWith('uploaded_')) {
+                    const courseName = data.replace('uploaded_', '');
+                    const uploadedFiles = readUploadedFiles();
+                    const fileName = uploadedFiles[courseName];
+                    
+                    if (fileName) {
+                        const filePath = path.join(PDF_FILES_DIR, fileName);
+                        
+                        if (fs.existsSync(filePath)) {
+                            // ارسال فایل PDF
+                            await sendPDFFile(chatId, filePath,
+                                `📚 *${courseName}*\n\n` +
+                                `فایل آپلود شده توسط کاربران\n` +
+                                `درخواست شده توسط: ${user.first_name}\n` +
+                                `🕐 ${new Date().toLocaleString('fa-IR')}`
+                            );
+                            
+                            // ارسال پیام تأیید
+                            await sendMessage(chatId, 
+                                `✅ فایل "${courseName}" ارسال شد.\n\n` +
+                                "👇 برای فایل‌های دیگر از منوی زیر انتخاب کنید:",
+                                { replyMarkup: getCourseMenuInlineKeyboard() }
+                            );
+                        } else {
+                            log(`فایل یافت نشد: ${filePath}`, 'ERROR');
+                            await sendMessage(chatId,
+                                `❌ فایل "${courseName}" یافت نشد.\n\n` +
+                                `لطفاً دوباره از منوی اصلی شروع کنید.`,
+                                { replyMarkup: getMainMenuInlineKeyboard(userId) }
+                            );
+                        }
+                    } else {
+                        await sendMessage(chatId,
+                            `❌ فایل "${courseName}" یافت نشد.\n\n` +
+                            `لطفاً دوباره از منوی اصلی شروع کنید.`,
+                            { replyMarkup: getMainMenuInlineKeyboard(userId) }
+                        );
+                    }
+                    break;
+                } else if (data === 'back_to_main') {
+                    userStates[chatId] = UserState.MAIN_MENU;
+                    await sendMessage(chatId, 
+                        "🔙 به منوی اصلی بازگشتید.\n\n" +
+                        "👇 لطفاً انتخاب کنید:",
+                        { replyMarkup: getMainMenuInlineKeyboard(userId) }
+                    );
+                    break;
+                } else {
+                    userStates[chatId] = UserState.MAIN_MENU;
+                    await sendMessage(chatId, 
+                        "👋 سلام! برای شروع روی /start کلیک کنید.",
+                        { replyMarkup: getMainMenuInlineKeyboard(userId) }
+                    );
+                }
         }
         
     } catch (error) {
         log(`خطا در پردازش Callback: ${error.message}`, 'ERROR');
+        await sendMessage(chatId,
+            `❌ خطا در پردازش درخواست:\n${error.message}\n\n` +
+            `لطفاً دوباره تلاش کنید.`,
+            { replyMarkup: getMainMenuInlineKeyboard(userId) }
+        );
     }
 }
 
@@ -396,10 +700,31 @@ function checkPDFFiles() {
     console.log('\n🔍 بررسی فایل‌های PDF...');
     console.log('='.repeat(50));
     
+    // ایجاد پوشه pdf_files
+    ensurePdfFilesDir();
+    
+    // فایل‌های اصلی
+    console.log('فایل‌های اصلی:');
     for (const [fileName, filePath] of Object.entries(PDF_FILES)) {
         const exists = fs.existsSync(filePath);
         const status = exists ? '✅ موجود' : '❌ یافت نشد';
         console.log(`${fileName.padEnd(20)}: ${status}`);
+    }
+    
+    // فایل‌های آپلود شده
+    const uploadedFiles = readUploadedFiles();
+    const uploadedCourseNames = Object.keys(uploadedFiles);
+    
+    if (uploadedCourseNames.length > 0) {
+        console.log('\nفایل‌های آپلود شده توسط کاربران:');
+        uploadedCourseNames.forEach(name => {
+            const fileName = uploadedFiles[name];
+            const filePath = path.join(PDF_FILES_DIR, fileName);
+            const exists = fs.existsSync(filePath) ? '✅ موجود' : '❌ یافت نشد';
+            console.log(`${name.padEnd(20)}: ${exists} (${fileName})`);
+        });
+    } else {
+        console.log('\n📭 هیچ فایلی توسط کاربران آپلود نشده است');
     }
     
     console.log('='.repeat(50));
@@ -417,7 +742,7 @@ async function startPolling() {
                 for (const update of updates.result) {
                     lastUpdateId = update.update_id;
                     
-                    if (update.message && update.message.text) {
+                    if (update.message && (update.message.text || update.message.document)) {
                         await processMessage(update.message);
                     }
                     
@@ -474,11 +799,17 @@ async function main() {
         console.log('📱 در بله جستجو کنید:');
         console.log(`   @${BOT_USERNAME}`);
         console.log('\n📂 فایل‌های موجود:');
-        Object.keys(PDF_FILES).forEach(file => {
-            const exists = fs.existsSync(PDF_FILES[file]) ? '✅' : '❌';
+        
+        const allFiles = getAllFiles();
+        Object.keys(allFiles).forEach(file => {
+            const exists = fs.existsSync(allFiles[file]) ? '✅' : '❌';
             console.log(`   ${exists} ${file}`);
         });
-        console.log('\n✨ دکمه‌های شیشه‌ای فعال شدند');
+        
+        console.log('\n✨ ویژگی‌های جدید:');
+        console.log('   📤 آپلود فایل توسط کاربران فعال شد');
+        console.log('   📁 فایل‌ها در پوشه pdf_files ذخیره می‌شوند');
+        console.log(`   👤 فقط ادمین (${ADMIN_ID}) می‌تواند آپلود کند`);
         console.log('\n⏹️  برای توقف: Ctrl + C\n');
         
         // شروع ربات
